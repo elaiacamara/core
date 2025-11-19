@@ -105,11 +105,18 @@ async fn try_main() -> Result<()>{
                 if let Err(e) = add_module(&config, &module, multi.clone()){
                     Err(format!("Failed to add module {}: {e}", module.name))?;
                 }
+                if let Err(e) = cmake::generate_to_file_from_path(&config, &config.cmd_path) {
+                    Err(format!("Failed to create config file {e}"))?;
+                }
                 let _ = tasks::build_cmake_project(&config, multi);
             }
             args::ModuleCommands::Remove(module) => {
-                if let Err(e) = remove_module(&mut config.get_project_config()?, &module.name, multi){
+                let mut config = config.get_project_config()?;
+                if let Err(e) = remove_module(&mut config, &module.name, multi){
                     Err(format!("Failed to remove module {}:{e}", module.name.blue()))?;
+                }
+                if let Err(e) = cmake::generate_to_file_from_path(&config, &config.cmd_path) {
+                    Err(format!("Failed to create config file {e}"))?;
                 }
                 println!("{} module {} removed.", "Success".green(), module.name.blue());
             }
@@ -222,5 +229,6 @@ async fn try_main() -> Result<()>{
             fs::copy(log_file, log_file_dst)?;
         }
     }
+
     Ok(())
 }

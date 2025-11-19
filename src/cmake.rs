@@ -52,16 +52,17 @@ fn get_path_to_template_cmakelists(config : &ProjectConfig) -> PathBuf{
         }
         let (cmake_modules,  cmake_link_modules) = {
             let all_cmake_mods = config_file.get_all_cmake_modules(&config.project_paths.root)?;
+            println!("cmakemodules: {:?}", all_cmake_mods);
             if path_to_dir.deref() == config.project_paths.root{
                 let cmake_modules = all_cmake_mods.iter()
                     .map(|m| m.module_name.clone()).collect::<Vec<_>>();
-                if let Some(modules) = config_file.modules{
-                    let cmake_link_modules = all_cmake_mods.iter()
-                        .filter(|module| modules.contains_key(&module.module_name)).map(|m| m.project_name.clone()).collect::<Vec<_>>();
-                    (cmake_modules, cmake_link_modules)
-                }else{
-                    (cmake_modules, Vec::new())
-                }
+                let modules = &config_file.get_all_submodules_id_pair(false);
+                println!("modules: {:?}", modules);
+                let cmake_link_modules = all_cmake_mods.iter()
+                    .filter(|module| modules.contains_key(&module.module_name)).map(|m| m.project_name.clone()).collect::<Vec<_>>();
+                println!("modules: {:?}", cmake_link_modules);
+                (cmake_modules, cmake_link_modules)
+                
             }else{
                 if let Some(modules) = config_file.modules{
                     let cmake_modules= Vec::new();

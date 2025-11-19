@@ -76,7 +76,7 @@ impl ClapSerdeCommand{
     }
 }
 
-#[derive(PartialEq)]
+#[derive(PartialEq, Debug)]
 pub struct CmakeModule{
     pub module_name : String,
     pub project_name : String
@@ -418,9 +418,9 @@ pub struct ModuleSourceGit{
     pub git_url : String,
     pub git_version : String,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub git_path : Option<String>
    // pub git_branch : Option<String>,
    // #[serde(skip_serializing_if = "Option::is_none")]
-    pub git_path : Option<String>
 }
 
 #[derive(Debug)]

@@ -291,11 +291,26 @@ pub fn build_cmake_project(config : &ProjectConfig, multi : Arc<MultiProgress>) 
     if !fs::exists(&config.project_paths.build)?{
         fs::create_dir(&config.project_paths.build)?;
     }
+    //let ninja = "Ninja";
+    let visual_studio = "Visual Studio 17 2022";
     
     let output = Command::new("cmake")
-        .args(["..", "-G", "Visual Studio 17 2022", "-A", "x64"])
+        .args(["..", "-G", visual_studio, "-A", "x64"])
         .current_dir(&config.project_paths.build)
         .output()?;
+    /*
+    let output = Command::new("cmake")
+        .current_dir(&config.project_paths.build)
+        .args(&[
+            "..",                          // source directory
+            "-G",
+            "Ninja",                 // generator
+            "-DCMAKE_C_COMPILER=cl.exe",   // MSVC C compiler
+            "-DCMAKE_CXX_COMPILER=cl.exe", // MSVC C++ compiler
+        ])
+        .output()?;
+*/
+    
     
     if !output.status.success(){
         Err(format!("failed to to build cmake project, {}", String::from_utf8_lossy(&output.stderr)))?;

@@ -114,6 +114,7 @@ pub fn add_git_submodule<'re>(git_repo : &'re Repository, name : &str, git_path 
     if !output.status.success(){
         Err(format!("Failed to checkout module to version {version},{}", String::from_utf8_lossy(&output.stderr)))?
     }
+    println!("Checked out to git tag version");
 
     spinner.change_message(format!("{} module {}: git init update submodule...", "Adding".green(), name.blue()));
     let output = {
@@ -211,7 +212,7 @@ pub fn add_module_to_modules_dir(name : &str, module : &Module, git_repo : &Repo
     cmake::generate_to_file_from_path(config, &config.project_paths.modules.join(&ID))?;
     //need to figure out which ones are git submodules and which are core modules
     //let git_repo = config.get_git2_repo()?;
-    let git_submodule = git_repo.find_submodule(module.get_git_name(&ID).unwrap().as_str()).map_err(|e|format!("Failed to find submodule {ID}: {e}"))?;
+    let git_submodule = git_repo.find_submodule(module.get_git_name(&name).unwrap().as_str()).map_err(|e|format!("Failed to find submodule {ID}: {e}"))?;
     let git_submodule_repo = git_submodule.open()?;
     let module_config_file_modules = match &module_config_file.modules{
         Some(modules) => modules,
