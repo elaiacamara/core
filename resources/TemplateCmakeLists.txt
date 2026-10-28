@@ -51,14 +51,14 @@ if(DOXYGEN_FOUND)
     set(DOXYGEN_IN_PATH "${CMAKE_SOURCE_DIR}/Doxyfile")  # Replace with your path if different
 
     # Create a custom target to generate documentation
-    add_custom_target(doc
+    add_custom_target(doc_%PROJECT_NAME%
         COMMAND ${DOXYGEN_EXECUTABLE} ${DOXYGEN_IN_PATH}
         WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
         COMMENT "Generating API documentation with Doxygen"
         VERBATIM)
 
     # Make the doc target depend on the build target
-    add_dependencies(doc ${PROJECT_NAME})  # Replace ${PROJECT_NAME} with your target name if needed
+    add_dependencies(doc_%PROJECT_NAME% ${PROJECT_NAME})  # Replace ${PROJECT_NAME} with your target name if needed
 endif()
 
 enable_testing()

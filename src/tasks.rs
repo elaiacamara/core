@@ -18,22 +18,17 @@ use crate::cmake;
 use crate::modules;
 
 
-pub async fn update_modules(config : ProjectConfig, config_file : Option<ConfigFile>, multi : Arc<MultiProgress>) -> Result<()>{
+pub async fn update_modules(config : ProjectConfig,multi : Arc<MultiProgress>) -> Result<()>{
     let spinner = Spinner::new("Updating modules...", Some(multi.clone()));
     defer!(spinner.finish(););
-    let config_file = match config_file {
-        Some(config_file) => config_file,
-        None => {
-            ConfigFile::new_from_file(&config)?
-        }
-    };
+    let config_file = &config.config_file;
     if !fs::exists(&config.project_paths.modules)?{
         fs::create_dir(&config.project_paths.modules)?;
     }
     let modules_dir_list = fs::read_dir(&config.project_paths.modules).map_err(|e| format!("Failed to read directory modules: {e}"))?;
     let mut current_modules_libraries = Vec::new();
     let git_repo = Repository::open(&config.project_paths.root).map_err(|e| format!("Failed to open git repository: {e}"))?;
-    let submodules = git_repo.submodules().map_err(|e| format!("Failed to get git submodules: {e}"))?;
+    //let submodules = git_repo.submodules().map_err(|e| format!("Failed to get git submodules: {e}"))?;
     for entry in modules_dir_list{
         let entry = entry.map_err(|e| format!("Failed to read entry: {e}"))?;
         if entry.path().is_dir(){
@@ -43,39 +38,43 @@ pub async fn update_modules(config : ProjectConfig, config_file : Option<ConfigF
         }
     }
 
-    if let Some(modules) = &config_file.modules{
-        for current_modules_lib in &current_modules_libraries{
-            if !modules.contains_key(current_modules_lib){
-                if let Ok(submodule) = git_repo.find_submodule(format!("modules/{}", &current_modules_lib).as_str()){
-                    spinner.change_message(format!("Updating modules: Removing module {}...", current_modules_lib));
-                    let output = Command::new("git")
-                        .args(["submodule", "deinit", "-f", "--", format!("submodule.modules/{current_modules_lib}").as_str()])
-                        .current_dir(&config.project_paths.root)
-                        .output()
-                        .map_err(|e| format!("Failed to run command: {e}"))?;
+    let modules = config_file.get_all_submodules_id_pair(true);
+    println!("{:?}", modules);
+    for current_module in &current_modules_libraries{
+        if !modules.contains_key(current_module){
+            if let Ok(submodule) = git_repo.find_submodule(format!("modules/{}", &current_module).as_str()){
+                spinner.change_message(format!("Updating modules: Removing module {}...", current_module));
+                let output = Command::new("git")
+                    .args(["submodule", "deinit", "-f", "--", format!("modules/{current_module}").as_str()])
+                    .current_dir(&config.project_paths.root)
+                    .output()
+                    .map_err(|e| format!("Failed to run command: {e}"))?;
 
-                    if !output.status.success(){
-                        Err(format!("Failed to deinit submodule {current_modules_lib}: {}", String::from_utf8_lossy(&output.stderr)))?;
-                    }
-                    
-                    let output = Command::new("git")
-                        .args(["config", "f", ".git/config", "--remove-section", format!("submodule.modules/{current_modules_lib}").as_str()])
-                        .current_dir(&config.project_paths.root)
-                        .output()
-                        .map_err(|e| format!("failed to run command: {e}"))?;
-                    
-                    if !output.status.success(){
-                        Err(format!("Failed to remove submodule {current_modules_lib} from git config: {}", String::from_utf8_lossy(&output.stderr)))?;
-                    }
-                    spinner.change_message("Updating modules...");
+                if !output.status.success(){
+                    Err(format!("Failed to deinit submodule {current_module}: {}", String::from_utf8_lossy(&output.stderr)))?;
                 }
-                fs::remove_dir_all(config.project_paths.modules.join(current_modules_lib)).map_err(|e| format!("Failed to remove {current_modules_lib} modules: {e}"))?;
+                /*    
+                let output = Command::new("git")
+                    .args(["config", "-f", ".git/config", "--remove-section", format!("submodule.\"modules/{current_module}\"").as_str()])
+                    .current_dir(&config.project_paths.root)
+                    .output()
+                    .map_err(|e| format!("failed to run command: {e}"))?;
+                    
+                if !output.status.success(){
+                    Err(format!("Failed to remove submodule {current_module} from git config: {}", String::from_utf8_lossy(&output.stderr)))?;
+                }*/
+                std::println!("removed from git config {}", current_module);
+                spinner.change_message("Updating modules...");
             }
+            fs::remove_dir_all(config.project_paths.modules.join(current_module)).map_err(|e| format!("Failed to remove {current_module} modules: {e}"))?;
+            fs::remove_dir_all(config.project_paths.root.join(".git").join("modules").join("modules").join(current_module)).map_err(|e| format!("Failed to remove {current_module} modules: {e}"))?;
         }
-        for (name, module) in modules{
-            if !current_modules_libraries.contains(name){
-                modules::add_module_to_modules_dir(name.as_str(), module, &git_repo, &config, multi.clone())?;
-            }
+
+    }
+    for (id, module) in &modules{
+        if !current_modules_libraries.contains(id){
+            std::println!("adding {id}");
+            modules::add_module_to_modules_dir(module.name.as_str(), module, &git_repo, &config, multi.clone())?;
         }
     }
     Ok(())
@@ -298,6 +297,7 @@ pub fn build_cmake_project(config : &ProjectConfig, multi : Arc<MultiProgress>) 
         .args(["..", "-G", visual_studio, "-A", "x64"])
         .current_dir(&config.project_paths.build)
         .output()?;
+    
     /*
     let output = Command::new("cmake")
         .current_dir(&config.project_paths.build)
@@ -307,10 +307,10 @@ pub fn build_cmake_project(config : &ProjectConfig, multi : Arc<MultiProgress>) 
             "Ninja",                 // generator
             "-DCMAKE_C_COMPILER=cl.exe",   // MSVC C compiler
             "-DCMAKE_CXX_COMPILER=cl.exe", // MSVC C++ compiler
+            "-DCMAKE_LINKER=link.exe",
         ])
         .output()?;
-*/
-    
+    */
     
     if !output.status.success(){
         Err(format!("failed to to build cmake project, {}", String::from_utf8_lossy(&output.stderr)))?;

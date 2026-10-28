@@ -17,6 +17,8 @@ pub enum Error{
     #[display("No config.yaml found. Must be inside a project.")]
     NoConfigFileFound,
 
+    #[display("cmake file is static")]
+    CmakeFileStatic,
     //git2
     #[from]
     Git2(git2::Error),

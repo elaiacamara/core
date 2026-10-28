@@ -1,4 +1,4 @@
-use std::process::Command;
+use std::process::{Command, exit};
 use std::path::{Path, PathBuf};
 use std::fs;
 use std::sync::Arc;
@@ -17,10 +17,19 @@ use crate::utils;
 use crate::args::{AddModule,BinaryType};
 use crate::cmake::{self,GeneratePattern};
 
-pub fn remove_git_submodule<'re>(name : &str, version : &str, git_path : Option<&str>, project_root : &Path) -> Result<()>{
+pub fn make_id(name : &str, version : &Option<String>) -> String{
+    return match &version{
+        Some(version) => format!("{name}_{version}"),
+        None => format!("{name}_")
+    };
+}
+
+pub fn remove_git_submodule<'re>(name : &str, version : &Option<String>, git_path : Option<&str>, project_root : &Path, config : &ProjectConfig) -> Result<()>{
+    let modules = config.config_file.get_all_submodules_id_pair(true);
+    let module = modules.get(&make_id(name, version)).ok_or_else(|| format!("module not found in config file"))?;
     let path = match git_path{
-        Some(git_path) => format!("modules/{name}_{version}/{git_path}"),
-        None => format!("modules/{name}_{version}")
+        Some(git_path) => format!("modules/{}/{git_path}", module.id),
+        None => format!("modules/{}", module.id)
     };
     let output = Command::new("git")
         .args(["submodule", "deinit", "-f", path.as_str()])
@@ -30,8 +39,16 @@ pub fn remove_git_submodule<'re>(name : &str, version : &str, git_path : Option<
     if !output.status.success(){
         Err(format!("Failed to deinit submodule {path}: {}", String::from_utf8_lossy(&output.stderr)))?;
     }
+    let output = Command::new("git")
+        .args(["rm", "--cached", &path])
+        .current_dir(project_root)
+        .output()
+        .map_err(|e| format!("Failed to run command {e}"))?;
+    if !output.status.success(){
+        Err(format!("Failed to remove cache {path}: {}", String::from_utf8_lossy(&output.stderr)))?;
+    }
 
-    fs::remove_dir_all(project_root.join("modules").join(format!("{name}_{version}"))).map_err(|e| format!("Failed to remove dir {path}: {e}"))?;
+    fs::remove_dir_all(project_root.join("modules").join(&module.id)).map_err(|e| format!("Failed to remove dir {path}: {e}"))?;
 
     let output = Command::new("git")
         .args(["add",".gitmodules"])
@@ -48,7 +65,7 @@ pub fn remove_git_submodule<'re>(name : &str, version : &str, git_path : Option<
         .output()
         .map_err(|e| format!("Failed to run command {e}"))?;
     if !output.status.success(){
-        Err(format!("Failed to remove {path} cache: {}", String::from_utf8_lossy(&output.stderr)))?;
+        println!("Failed to remove {path} cache: {}", String::from_utf8_lossy(&output.stderr));
     }
 
     let output = Command::new("git")
@@ -60,23 +77,27 @@ pub fn remove_git_submodule<'re>(name : &str, version : &str, git_path : Option<
         Err(format!("Failed to deinit submodule {path}: {}", String::from_utf8_lossy(&output.stderr)))?;
     }
     let path_to_remove = match git_path{
-        Some(git_path) => project_root.join(".git").join("modules").join("modules").join(format!("{name}_{version}")).join(git_path),
-        None => project_root.join(".git").join("modules").join("modules").join(format!("{name}_{version}")),
+        Some(git_path) => project_root.join(".git").join("modules").join("modules").join(&module.id).join(git_path),
+        None => project_root.join(".git").join("modules").join("modules").join(&module.id),
     };
     fs::remove_dir_all(&path_to_remove).map_err(|e| format!("Failed to remove dir {:?}: {e}", path_to_remove))?;
     Ok(())
 }
-pub fn add_git_submodule<'re>(git_repo : &'re Repository, name : &str, git_path : Option<&str>, url : &str, version : &str, project_root : &Path, multi : Arc<MultiProgress>) -> Result<Submodule<'re>>{
+
+pub fn add_git_submodule<'re>(git_repo : &'re Repository, name : &str, git_path : Option<&str>, url : &str, version : &Option<String>, project_root : &Path, config : &ProjectConfig, multi : Arc<MultiProgress>) -> Result<Submodule<'re>>{
     let spinner = Spinner::new(format!("{} module {}: git add submodule...", "Adding".green(), name.blue()), Some(multi.clone()));
     defer!(spinner.finish(););
-    let dir_path = match git_path{
-        Some(path) => format!("modules/{name}_{version}/{path}"),
-        None => format!("modules/{name}_{version}")
+    
+    let modules = config.config_file.get_all_submodules_id_pair(true);
+    let module = modules.get(&make_id(name, version)).ok_or_else(|| format!("{} not found in config file", make_id(name,version)))?;
+    let path = match git_path{
+        Some(git_path) => format!("modules/{}/{git_path}", module.id),
+        None => format!("modules/{}", module.id)
     };
     let output = {
         //if let Some(branch) = branch{
             Command::new("git")
-                .args(["submodule", "add",  url, dir_path.as_str()])
+                .args(["submodule", "add",  url, path.as_str()])
                 .current_dir(project_root)
                 .output()
                 .map_err(|e| format!("Failed to run command: {e}"))?
@@ -91,30 +112,48 @@ pub fn add_git_submodule<'re>(git_repo : &'re Repository, name : &str, git_path 
     if !output.status.success(){
         Err(format!("Failed to add git submodule {}: {}", name.blue(), String::from_utf8_lossy(&output.stderr)))?
     }
-
-    let output = {
-        //if let Some(branch) = branch{
+    if let Some(version) = version{
+        let output = {
+            
             let dir_path = match git_path{
-                Some(path) => PathBuf::from("modules").join(format!("{name}_{version}")).join(path),
-                None => PathBuf::from("modules").join(format!("{name}_{version}"))
+                Some(path) => PathBuf::from("modules").join(&module.id).join(path),
+                None => PathBuf::from("modules").join(&module.id)
             };
             Command::new("git")
                 .args(["checkout", version])
                 .current_dir(project_root.join(dir_path))
                 .output()
                 .map_err(|e| format!("Failed to run command: {e}"))?
-        /* }else{
-            Command::new("git")
-                .args(["submodule", "add", url, path.as_str()])
-                .current_dir(project_root)
-                .output()
-                .map_err(|e| format!("Failed to run command: {e}"))?
-        }*/
-    };
-    if !output.status.success(){
-        Err(format!("Failed to checkout module to version {version},{}", String::from_utf8_lossy(&output.stderr)))?
+        };
+        if !output.status.success(){
+            Err(format!("Failed to checkout module to version {version},{}", String::from_utf8_lossy(&output.stderr)))?
+        }
+
+        /*
+        let output = Command::new("git")
+            .args(["add", "."])
+            .current_dir(&project_root)
+            .output()?;
+
+        if !output.status.success(){
+            Err(format!("Failed to add module version change to main git, {}", String::from_utf8_lossy(&output.stderr)))?
+        }
+
+        let output = Command::new("git")
+            .args(["commit", "-m", &format!("Changed submodule {name} to version {version}")])
+            .current_dir(&project_root)
+            .output()?;
+        println!("{name} {version}");
+
+        if !output.status.success() {
+            Err(format!(
+                "Failed to commit submodule update: {}",
+                String::from_utf8_lossy(&output.stderr)
+            ))?
+        }
+        */
     }
-    println!("Checked out to git tag version");
+    
 
     spinner.change_message(format!("{} module {}: git init update submodule...", "Adding".green(), name.blue()));
     let output = {
@@ -127,65 +166,62 @@ pub fn add_git_submodule<'re>(git_repo : &'re Repository, name : &str, git_path 
     if !output.status.success(){
         Err(format!("Failed to init git submodule {}: {}", name.blue(), String::from_utf8_lossy(&output.stderr)))?
     }
-    git_repo.find_submodule(&dir_path.as_str()).map_err(|e| format!("Failed to find submodule {}: {e}", name.blue()).into())
+    git_repo.find_submodule(&path.as_str()).map_err(|e| format!("Failed to find submodule {}: {e}", name.blue()).into())
 }
 
 pub fn add_module_to_modules_dir(name : &str, module : &Module, git_repo : &Repository, config : &ProjectConfig,  multi : Arc<MultiProgress>)->Result<()>{
-
-    let mut ID : String = name.to_string();
-            match &module.source{
-                ModuleSource::Curl(curl) =>{
-                    match curl {
-                        ModuleSourceCurl::CurlUrl{curl_url} =>{
-                            utils::curl_url(&curl_url, &config.project_paths.root.join("modules").join(&ID))
-                                .map_err(|e| format!("Failed to add module {name} : {e}"))?;
-                        }
-                        ModuleSourceCurl::CurlUrls{curl_urls} =>{
-                            let path = config.project_paths.root.join("modules").join(&ID);
-                            for url in curl_urls{
-                                utils::curl_url(url, &path).map_err(|e| format!("Failed to add module {name} : {e}"))?;
-                            }
-                        }
+    match &module.source{
+        ModuleSource::Curl(curl) =>{
+            match curl {
+                ModuleSourceCurl::CurlUrl{curl_url} =>{
+                    utils::curl_url(&curl_url, &config.project_paths.root.join("modules").join(&module.id))
+                        .map_err(|e| format!("Failed to add module {name} : {e}"))?;
+                }
+                ModuleSourceCurl::CurlUrls{curl_urls} =>{
+                    let path = config.project_paths.root.join("modules").join(&module.id);
+                    for url in curl_urls{
+                        utils::curl_url(url, &path).map_err(|e| format!("Failed to add module {name} : {e}"))?;
                     }
-                }
-                ModuleSource::Git(git) => {
-                    add_git_submodule(&git_repo, name, git.git_path.as_deref(), &git.git_url, &git.git_version, &config.project_paths.root, multi.clone())?;
-                    ID = format!("{name}_{}", &git.git_version);
-                }
-            };
-            if let Some(cmd) = &module.cmd{
-                let output = Command::new(cmd.exec.as_str())
-                    .args(&cmd.args)
-                    .current_dir(config.project_paths.modules.join(&ID))
-                    .output()?;
-                if !output.status.success(){
-                    Err(format!("Failed to run module setupt command: {} {}", &cmd.exec, cmd.args.join(" ")))?;
                 }
             }
-            if let Some(cmake) = &module.cmake{
-                if let Some(true) = cmake.gen{
-                    if fs::exists(config.project_paths.modules.join(name).join("config.yaml"))?{
-                        Err(format!("Module {name} has a config.yaml. Cmake custom generation is not compatible with modules that use config.yaml"))?
-                    }
-                    let path = config.project_paths.modules.join(&ID);
-                    //include  path is for main cmakelists not for generated one
-                    let path_vec = match &cmake.include_path{
-                        Some(path) => {
-                            Some(vec![path.clone()])
-                        }
-                        None => None
-                    }; 
-                    cmake::generate_to_file(config, path,&GeneratePattern{
-                        project_name : ID.as_str(),
-                        add_command : BinaryType::StaticLibrary,
-                        include_paths: path_vec.as_ref(),
-                        link_modules : None,
-                        subdirectories : None,
-                        sources_path : cmake.sources_path.as_deref(),
-                        recursive_glob : cmake.recursive_glob,
-                        cmp_def : None
-                    }).map_err(|e| format!("Failed to generate cmake_file: {e}"))?;
+        }
+        ModuleSource::Git(git) => {
+            add_git_submodule(&git_repo, name, git.git_path.as_deref(), &git.git_url, &git.git_version, &config.project_paths.root, config, multi.clone())?;
+        }
+    }
+    if let Some(cmd) = &module.cmd{
+        let output = Command::new(cmd.exec.as_str())
+            .args(&cmd.args)
+            .current_dir(config.project_paths.modules.join(&module.id))
+            .output()?;
+        if !output.status.success(){
+            Err(format!("Failed to run module setupt command: {} {}", &cmd.exec, cmd.args.join(" ")))?;
+        }
+    }
+    if let Some(cmake) = &module.cmake{
+        if let Some(true) = cmake.gen{
+            if fs::exists(config.project_paths.modules.join(name).join("config.yaml"))?{
+                Err(format!("Module {name} has a config.yaml. Cmake custom generation is not compatible with modules that use config.yaml"))?
+            }
+            let path = config.project_paths.modules.join(&module.id);
+            //include  path is for main cmakelists not for generated one
+            let path_vec = match &cmake.include_path{
+                Some(path) => {
+                    Some(vec![path.clone()])
                 }
+                None => None
+            }; 
+            cmake::generate_to_file(config, path,&GeneratePattern{
+                project_name : &module.id,
+                add_command : BinaryType::StaticLibrary,
+                include_paths: path_vec.as_ref(),
+                link_modules : None,
+                subdirectories : None,
+                sources_path : cmake.sources_path.as_deref(),
+                recursive_glob : cmake.recursive_glob,
+                cmp_def : None
+            }).map_err(|e| format!("Failed to generate cmake_file: {e}"))?;
+        }
     };
     //early return only if its not git. if so we need to add them recursively and handle core module dependencies
 
@@ -193,7 +229,7 @@ pub fn add_module_to_modules_dir(name : &str, module : &Module, git_repo : &Repo
         return Ok(())
     }
     //handle childs and module dependencies
-    let path_to_config_file = config.project_paths.modules.join(&ID).join("config.yaml");
+    let path_to_config_file = config.project_paths.modules.join(&module.id).join("config.yaml");
     if !path_to_config_file.exists(){
         //todo!("recursively initialize all submodules");
         /*let output = {
@@ -209,10 +245,10 @@ pub fn add_module_to_modules_dir(name : &str, module : &Module, git_repo : &Repo
         return Ok(())
     }
     let module_config_file = ConfigFile::new_from_path(&config.project_paths, &path_to_config_file)?;
-    cmake::generate_to_file_from_path(config, &config.project_paths.modules.join(&ID))?;
+    cmake::generate_to_file_from_path(config, &config.project_paths.modules.join(&module.id))?;
     //need to figure out which ones are git submodules and which are core modules
     //let git_repo = config.get_git2_repo()?;
-    let git_submodule = git_repo.find_submodule(module.get_git_name(&name).unwrap().as_str()).map_err(|e|format!("Failed to find submodule {ID}: {e}"))?;
+    let git_submodule = git_repo.find_submodule(module.get_git_name(&name).unwrap().as_str()).map_err(|e|format!("Failed to find submodule {}: {e}", module.id))?;
     let git_submodule_repo = git_submodule.open()?;
     let module_config_file_modules = match &module_config_file.modules{
         Some(modules) => modules,
@@ -306,8 +342,9 @@ pub fn remove_module(config : &mut ProjectConfig, name : &String, multi : Arc<Mu
 }
 
 pub fn remove_module_from_dir(config : &ProjectConfig, name : &String, multi : Arc<MultiProgress>) -> Result<()>{
-    let id = config.config_file.get_module_id(name)
+    let id = config.config_file.get_module_id(name, true)
         .ok_or_else(|| format!("Failed to find module with name: {name}"))?;
+    println!("count {}", config.config_file.get_module_reference_count(name) );
     match config.config_file.get_module_reference_count(name) {
         0 => Err(format!("Failed to find {name} in any config_file modules"))?,
         1 => {},//continue with module deletion, its not any module's dependency
@@ -338,7 +375,7 @@ pub fn remove_module_from_dir(config : &ProjectConfig, name : &String, multi : A
                     fs::remove_dir_all(config.project_paths.modules.join(name)).map_err(|e| format!("Failed to remove {} directory: {e}", name))?;
                 }
                 ModuleSource::Git(git) => {
-                    remove_git_submodule(name,git.git_version.as_str(), git.git_path.as_deref(),  &config.project_paths.root)?;
+                    remove_git_submodule(name, &git.git_version, git.git_path.as_deref(),  &config.project_paths.root, &config)?;
                 }
             }
         } else {
@@ -363,3 +400,4 @@ pub fn remove_module_from_config(name : &String,config_file : & mut ConfigFile) 
     }
     Ok(())
 }
+

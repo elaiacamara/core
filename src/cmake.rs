@@ -1,10 +1,12 @@
 use std::ops::Deref;
 use std::{fs, path::PathBuf};
 
+use fs_extra::error;
+
 use crate::args::BinaryType;
 use crate::config::{Config, ConfigFile, Module, ProjectConfig};
 use crate::Result;
-
+use crate::error::Error;
 
 pub struct GeneratePattern<'a>{
     pub project_name : &'a str,
@@ -32,6 +34,9 @@ fn get_path_to_template_cmakelists(config : &ProjectConfig) -> PathBuf{
     }
 
     pub fn generate_to_string_from_path(config : &ProjectConfig, path_to_dir : &PathBuf) -> Result<String>{
+        if config.config_file.static_cmake.is_some_and(|val| val == true){
+            return Err(Error::CmakeFileStatic);
+        }
         let config_file = ConfigFile::new_from_path(&config.project_paths, &path_to_dir.join("config.yaml"))?;
         let mut cmake_include_paths : Vec<String>  = Vec::new();
         if let Some(modules) = &config_file.modules {
@@ -42,9 +47,9 @@ fn get_path_to_template_cmakelists(config : &ProjectConfig) -> PathBuf{
                     //}
                     //Module::Spec(spec) => 
                 if let Some(include_path) = &module.include_path{
-                    cmake_include_paths.push(format!("{}/{include_path}",module.get_id(name)));
+                    cmake_include_paths.push(format!("{}/{include_path}",module.id));
                 }else{
-                    cmake_include_paths.push(module.get_id(name));
+                    cmake_include_paths.push(module.id.clone());
                 }
                 //}
                 return true;
@@ -52,15 +57,12 @@ fn get_path_to_template_cmakelists(config : &ProjectConfig) -> PathBuf{
         }
         let (cmake_modules,  cmake_link_modules) = {
             let all_cmake_mods = config_file.get_all_cmake_modules(&config.project_paths.root)?;
-            println!("cmakemodules: {:?}", all_cmake_mods);
             if path_to_dir.deref() == config.project_paths.root{
                 let cmake_modules = all_cmake_mods.iter()
                     .map(|m| m.module_name.clone()).collect::<Vec<_>>();
                 let modules = &config_file.get_all_submodules_id_pair(false);
-                println!("modules: {:?}", modules);
                 let cmake_link_modules = all_cmake_mods.iter()
                     .filter(|module| modules.contains_key(&module.module_name)).map(|m| m.project_name.clone()).collect::<Vec<_>>();
-                println!("modules: {:?}", cmake_link_modules);
                 (cmake_modules, cmake_link_modules)
                 
             }else{

@@ -162,8 +162,14 @@ async fn try_main() -> Result<()>{
         args::Commands::Update => {
             let config = config.get_project_config()?;
             if let Err(e) = cmake::generate_to_file_from_path(&config, &config.cmd_path) {
-                Err(format!("Failed to create config file {e}"))?;
+                match e{
+                    Error::CmakeFileStatic => {},
+                    _ => {
+                        Err(format!("Failed to create config file {e}"))?;
+                    }
+                }
             }
+            tasks::update_modules(config, multi).await.unwrap();
         }
         args::Commands::Syris(syris_command) => match syris_command{
             SyrisCommands::New(new_command)=>{

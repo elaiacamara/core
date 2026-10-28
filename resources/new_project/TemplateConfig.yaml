@@ -3,3 +3,5 @@ current_target : %PROJECT_NAME%
 
 targets:
   %PROJECT_NAME% : Executable
+
+modules:

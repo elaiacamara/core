@@ -1,9 +1,10 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::env;
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::fs;
 use std::hash::{Hash, Hasher};
+
 
 use colored::Colorize;
 use serde::{Deserialize, Serialize,Deserializer};
@@ -22,16 +23,18 @@ pub struct ConfigFile{
     pub targets : HashMap<String, BinaryType>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub build_ops : Option<HashMap<String, Build>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none", deserialize_with = "deserialize_modules")]
     pub modules : Option<HashMap<String, Module>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cmp_defs : Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub command : Option<HashMap<String, ClapSerdeCommand>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub static_cmake : Option<bool>,
     #[serde(skip)]
     path : PathBuf,
     #[serde(skip)]
-    childs : Vec<ConfigFile>
+    pub childs : Vec<ConfigFile>
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -90,6 +93,24 @@ impl Hash for CmakeModule{
     }
 }
 
+//custom deserializer to initialize the name and id of modules
+pub fn deserialize_modules<'de, D>(
+    deserializer: D,
+) -> core::result::Result<Option<HashMap<String, Module>>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let mut map = Option::<HashMap::<String, Module>>::deserialize(deserializer)?;
+    if let Some(modules) = &mut map{
+        for (name, module) in modules.iter_mut() {
+            module.name = name.clone();
+            module.id = module.gen_id(name)
+        }
+    }
+
+    Ok(map)
+}
+
 impl ConfigFile{
     pub fn new_from_path(project_paths : &ProjectPaths, path : &PathBuf) -> Result<ConfigFile>{
         let file_source = fs::read_to_string(path)
@@ -98,8 +119,8 @@ impl ConfigFile{
 
         //check if modules have config files if so integrate
         if let Some(modules) = &file.modules{
-            for name in modules.keys(){
-                let module_config_path = project_paths.modules.join(&name).join("config.yaml");
+            for (name ,module) in modules{
+                let module_config_path = project_paths.modules.join(&module.id).join("config.yaml");
                 if fs::exists(&module_config_path).unwrap(){
                     file.childs.push(ConfigFile::new_from_path(project_paths, &module_config_path)?);
                 }
@@ -112,10 +133,19 @@ impl ConfigFile{
         ConfigFile::new_from_path(&config.project_paths, &config.project_paths.config_file)
     }
 
-    pub fn get_module_id(&self, name : &str) -> Option<String>{
+    pub fn get_module_id(&self, name : &str, recourse : bool) -> Option<String>{
         if let Some(modules) = &self.modules{
             if let Some(module) = modules.get(name){
-                return Some(module.get_id(name));
+                return Some(module.id.clone());
+            }else{
+                if recourse{
+                    for child in &self.childs{
+                        if let Some(module) = child.get_module_id(name, true){
+                            return Some(module)
+                        }
+
+                    }
+                }
             }
         }
         return None;
@@ -177,16 +207,16 @@ impl ConfigFile{
         let mut cmake_modules = HashSet::new();
         if let Some(modules) = &self.modules{
             for (name, module) in modules{
-                let cmake_path = project_root.join("modules").join(module.get_id(name)).join("CMakeLists.txt");
+                let cmake_path = project_root.join("modules").join(&module.id).join("CMakeLists.txt");
                 if fs::exists(&cmake_path).map_err(|e| format!("Failed to check if cmake exists: {e}"))?{
                     
                     cmake_modules.insert(CmakeModule{
-                        module_name : module.get_id(name),
+                        module_name : module.id.clone(),
                         project_name : {
                             if let Some(link_name) = &module.link_name{
                                 link_name.clone()
                             }else{
-                                utils::get_cmake_project_name(project_root.join("modules").join(module.get_id(name)))
+                                utils::get_cmake_project_name(project_root.join("modules").join(&module.id))
                                     .map_err(|e| format!("Failed to get cmake project name for {name}: {e}"))?
                             }
                         }
@@ -222,7 +252,7 @@ impl ConfigFile{
         let mut modules_id : HashMap<String, Module> = HashMap::new();
         if let Some(modules) = &self.modules {
             for (name, module ) in modules{
-                modules_id.insert(module.get_id(name), module.clone());
+                modules_id.insert(module.id.clone(), module.clone());
             }
         }
         if recurse{
@@ -243,6 +273,7 @@ impl ConfigFile{
                 count += 1;
             }
             for child in &self.childs{
+                println!("Looking at {}", child.project);
                 count += child.get_module_reference_count(to_find);
             }
             count
@@ -291,7 +322,9 @@ pub struct Module{
     #[serde(skip_serializing_if = "Option::is_none")]
     pub link_name : Option<String>,
     #[serde(skip)]
-    id : Option<String>
+    pub id : String,
+    #[serde(skip)]
+    pub name : String
 }
 
 impl Module{
@@ -303,40 +336,38 @@ impl Module{
     }
     pub fn get_git_name(self : &Self, name : &str) -> Option<String>{
         match &self.source{
+            
             ModuleSource::Git(git) => {
                 if let Some(git_path) = &git.git_path{
-                    return Some(format!("modules/{name}_{}/{git_path}", git.git_version))
+                    return Some(format!("modules/{name}_{}/{git_path}", self.get_version()))
                 }
-                Some(format!("modules/{name}_{}", git.git_version))
+                Some(format!("modules/{name}_{}", self.get_version()))
             }
             ModuleSource::Curl(_) => None
         }
     }
 
-    pub fn get_id(self : &Self, name : &str) -> String{
-        match &self.id{
-            None => {
-                match &self.source{
-                    ModuleSource::Git(git) => {
-                        return format!("{name}_{}",git.git_version);
-                    }
-                    ModuleSource::Curl(_) => {
-                        return name.to_string();
-                    }
+    pub fn gen_id(self : &Self, name : &str) -> String{
+            match &self.source{
+                ModuleSource::Git(git) => {
+                    return format!("{name}_{}",self.get_version());
+                }
+                ModuleSource::Curl(_) => {
+                    return name.to_string();
                 }
             }
-            Some(id) => return id.clone()
-        }        
     }
 
-    pub fn get_version(self: &Self) -> Option<String>{
-
+    pub fn get_version(self: &Self) -> String{
         match &self.source{
             ModuleSource::Git(git) => {
-                return Some(git.git_version.clone());
+                return match &git.git_version{
+                    Some(version) => version.clone(),
+                    None => "".to_string()
+                }
             }
             ModuleSource::Curl(_) => {
-                return None;
+                return "".to_string();
             }
         }
     }
@@ -416,7 +447,8 @@ pub enum ModuleSourceCurl{
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct ModuleSourceGit{
     pub git_url : String,
-    pub git_version : String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub git_version : Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub git_path : Option<String>
    // pub git_branch : Option<String>,
@@ -476,7 +508,7 @@ impl<'de> Deserialize<'de> for ModuleSource{
                 }
 
                 match (git_url, git_version, git_path, curl_url, curl_urls){
-                    (Some(git_url), Some(git_version),git_path, None, None) => Ok(ModuleSource::Git(ModuleSourceGit{ git_url, git_version, git_path})),
+                    (Some(git_url), git_version,git_path, None, None) => Ok(ModuleSource::Git(ModuleSourceGit{ git_url, git_version, git_path})),
                     (None, None, None,Some(curl_url), None) => Ok(ModuleSource::Curl(ModuleSourceCurl::CurlUrl { curl_url })),
                     (None, None, None, None, Some(curl_urls)) => Ok(ModuleSource::Curl(ModuleSourceCurl::CurlUrls { curl_urls })),
 
@@ -549,7 +581,7 @@ pub fn get_config() -> Result<ConfigType>{
     let asharis_root : PathBuf = PathBuf::from(env::var("ASHARIS_ROOT").map_err(|e| format!("failed to find ASHARIS_ROOT in environment variables: {:?}", e))?);
     let cmd_path = env::current_dir().map_err(|e| format!("environment variable pwd not set: {}", e))?;
     let project_root = {
-        let parent_dir = {
+        /*let parent_dir = {
             let mut hold = cmd_path.clone();
             hold.pop();
             hold.pop();
@@ -557,7 +589,7 @@ pub fn get_config() -> Result<ConfigType>{
         };
         if fs::exists(parent_dir.join("config.yaml"))?{
             Some(parent_dir)
-        }else if fs::exists(cmd_path.join("config.yaml"))?{
+        }else*/ if Path::exists(&cmd_path.join("config.yaml")){
             Some(cmd_path.clone())
         }else{
             None
@@ -584,7 +616,7 @@ pub fn get_config() -> Result<ConfigType>{
                 asharis_root,
                 cmd_path,
                 flags,
-                config_file : ConfigFile::new_from_path(&project_paths, &project_root.join("config.yaml"))?,
+                config_file : ConfigFile::new_from_path(&project_paths, &project_root.join("config.yaml")).map_err(|e| format!("Failed to create config file from path {e}"))?,
                 project_paths,
             }
         ))
